@@ -1,23 +1,23 @@
 # FRANK Netcard
 
-ESP-01 (ESP8266) AT modem firmware for [FRANK](https://rh1.tech/projects/frank?area=about) and other RP2350-based boards. Turns a low-cost ESP-01 WiFi module into a UART-controlled network modem, allowing the host MCU to manage WiFi connections and TCP/TLS/UDP sockets via AT commands.
+AT modem firmware for ESP-01 (ESP8266). The host MCU (e.g. RP2350 on [FRANK](https://rh1.tech/projects/frank?area=about)) sends AT commands over UART to manage WiFi and TCP/TLS/UDP sockets.
 
 ## Features
 
-- AT command protocol over UART (115200 baud default, configurable up to 3M)
-- WiFi station mode with scanning, connect/disconnect, and auto-reconnect
-- 4 concurrent sockets (TCP, TLS/SSL via BearSSL, UDP)
+- AT commands over UART (115200 baud default, up to 3M)
+- WiFi scanning, connect/disconnect, auto-reconnect
+- 4 concurrent sockets -- TCP, TLS/SSL (BearSSL), UDP
 - DNS resolution
-- Binary data framing for send/receive with async event delivery
-- Compact firmware for ESP-01 (1MB flash, ~50KB free RAM)
+- Binary data framing with async receive events
+- Fits on ESP-01 (1MB flash, ~50KB free RAM)
 
-## Hardware Requirements
+## Hardware
 
-- **ESP-01** module (ESP8266, 1MB flash)
-- **USB-serial adapter** for flashing and testing (3.3V FTDI or similar)
-- **Host MCU** with UART (e.g. RP2350) for production use
+- ESP-01 module (ESP8266, 1MB flash)
+- USB-serial adapter for flashing and testing (3.3V FTDI or similar)
+- Host MCU with UART (e.g. RP2350)
 
-### Wiring to Host MCU
+### Wiring
 
 | ESP-01 Pin | Host MCU |
 |------------|----------|
@@ -74,9 +74,9 @@ Environment variables:
 ./test.sh --wifi MyNetwork,mypassword --full --tls-host rh1.tech:443
 ```
 
-## AT Command Protocol
+## AT command protocol
 
-The host MCU communicates over UART at 115200 baud (8N1, default).
+UART at 115200 baud, 8N1 (default).
 
 ### Conventions
 
@@ -103,7 +103,7 @@ On power-up or reset, the modem emits:
 
 The host must wait for `+READY` before sending commands.
 
-### System Commands
+### System commands
 
 #### AT
 
@@ -156,7 +156,7 @@ Valid range: 9600 -- 3000000.
    ... host must now switch to 230400 ...
 ```
 
-### WiFi Commands
+### WiFi commands
 
 #### AT+WSCAN
 
@@ -226,7 +226,7 @@ When disconnected:
 <- OK
 ```
 
-### Network Commands
+### Network commands
 
 #### AT+RESOLVE=\<hostname\>
 
@@ -243,9 +243,9 @@ On failure:
 <- ERROR:DNS_FAILED
 ```
 
-### Socket Commands
+### Socket commands
 
-Up to **4 concurrent sockets** (IDs 0-3). Supports TCP, TLS, and UDP.
+Up to 4 concurrent sockets (IDs 0-3). TCP, TLS, and UDP.
 
 #### AT+SOPEN=\<id\>,\<type\>,\<host\>,\<port\>
 
@@ -281,10 +281,10 @@ Possible errors:
 | `BIND_FAILED` | Could not bind UDP local port |
 | `INVALID_TYPE` | Unknown socket type |
 
-**TLS notes:**
-- Certificate verification is **disabled** (ESP-01 has too little RAM for CA store).
-- TLS uses BearSSL. One TLS connection needs ~20-40KB of heap.
-- Practical limit: 1-2 concurrent TLS connections on ESP-01.
+TLS notes:
+- Certificate verification is disabled (ESP-01 has too little RAM for a CA store).
+- TLS uses BearSSL. One connection needs ~20-40KB of heap.
+- In practice you get 1-2 concurrent TLS connections on an ESP-01.
 
 #### AT+SSEND=\<id\>,\<length\>
 
@@ -304,11 +304,11 @@ Step by step:
 3. Host sends exactly 13 raw bytes (no `\r\n` terminator needed)
 4. Modem sends data over the socket, responds `SEND OK\r\n` or `SEND FAIL\r\n`
 
-**Important:**
+Watch out:
 - After the `>` prompt, send exactly `length` raw bytes. No framing.
-- While in binary mode, async events (+SRECV) are paused.
-- If no data arrives within 10 seconds, the modem responds `ERROR:SEND_TIMEOUT` and returns to command mode.
-- For payloads larger than 1024 bytes, send multiple AT+SSEND commands.
+- Async events (+SRECV) are paused while in binary mode.
+- 10-second timeout -- if no data arrives, the modem responds `ERROR:SEND_TIMEOUT` and returns to command mode.
+- For payloads larger than 1024 bytes, split across multiple AT+SSEND commands.
 
 #### AT+SCLOSE=\<id\>
 
@@ -334,21 +334,21 @@ Response fields: `id,type,state,remote_host,remote_port`
 
 If no sockets are open, only `OK` is returned.
 
-### Async Events (Unsolicited)
+### Async events
 
-These are emitted by the modem at any time while in command mode.
+These can arrive at any time while in command mode.
 The host parser must handle them interleaved with command responses.
 
 #### +SRECV:\<id\>,\<length\>\r\n\<data\>
 
-Incoming socket data. Immediately after the `\r\n` that ends the header line,
-exactly `length` raw bytes follow. There is **no** trailing `\r\n` after the data.
+Incoming socket data. After the `\r\n` that ends the header line,
+exactly `length` raw bytes follow. No trailing `\r\n` after the data.
 
 ```
 <- +SRECV:0,45\r\n<exactly 45 bytes of raw data>
 ```
 
-**Parsing algorithm for the host:**
+Parsing on the host side:
 1. Read a line (up to `\r\n`)
 2. If line starts with `+SRECV:`, extract `id` and `length`
 3. Read exactly `length` bytes -- these are raw payload (may contain `\r\n`)
@@ -386,7 +386,7 @@ reopened by the host.
 <- +WCONN:192.168.1.42
 ```
 
-### Example Session: HTTP GET
+### Example: HTTP GET
 
 ```
 -> AT
@@ -413,7 +413,7 @@ reopened by the host.
 <- +SCLOSED:0
 ```
 
-### Example Session: HTTPS GET
+### Example: HTTPS GET
 
 ```
 -> AT+HEAP
@@ -433,11 +433,11 @@ reopened by the host.
 <- +SCLOSED:0
 ```
 
-### Host Driver Implementation Notes
+### Host driver notes
 
-#### Parser Architecture
+#### Parser architecture
 
-The host UART parser should operate as a line-oriented state machine:
+The host UART parser is a line-oriented state machine:
 
 ```
 STATE: READLINE
@@ -461,30 +461,27 @@ STATE: READDATA(remaining)
 
 #### Concurrency
 
-- Only one command can be in-flight at a time.
-- Send a command, wait for `OK` or `ERROR` before sending the next.
-- Async events (+SRECV, +SCLOSED, +WDISCONN) can arrive while waiting for a response.
-  Buffer them or dispatch immediately in your read loop.
+Only one command at a time. Send a command, wait for `OK` or `ERROR` before sending the next. Async events (+SRECV, +SCLOSED, +WDISCONN) can arrive while waiting -- buffer them or dispatch immediately in your read loop.
 
-#### Flow Control
+#### Flow control
 
 The ESP-01 does not expose CTS/RTS pins, so there is no hardware flow control.
-At 115200 baud this is not an issue for normal use. If you need higher throughput:
+At 115200 baud this is not a problem. For higher throughput:
 
 - Increase baud with AT+BAUD (up to 3M)
 - Keep host UART RX reads fast (interrupt-driven, not polled)
 - The modem pauses async events during AT+SSEND binary mode
 
-#### Reconnection Strategy
+#### Reconnection
 
 When +WDISCONN fires:
 1. All sockets are already closed (you'll get +SCLOSED for each)
 2. Wait for +WCONN (auto-reconnect is enabled)
 3. Reopen any sockets you need
 
-#### Memory Constraints
+#### Memory
 
-The ESP-01 has ~50KB free RAM at runtime. Key limits:
+The ESP-01 has ~50KB free RAM at runtime. Rough costs:
 - Each TCP socket: ~2-4KB
 - Each TLS socket: ~20-40KB (BearSSL)
 - Practical maximum: 4 TCP, or 1-2 TLS + 1-2 TCP
