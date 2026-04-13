@@ -492,7 +492,7 @@ The ESP-01 has ~50KB free RAM at runtime. Key limits:
 
 ## License
 
-MIT
+GNU General Public License v3. See [LICENSE](LICENSE) for details.
 
 ## Author
 
