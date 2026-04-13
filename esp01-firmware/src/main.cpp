@@ -9,13 +9,14 @@
  */
 
 #include <ESP8266WiFi.h>
+#include <ESP8266Ping.h>
 #include <WiFiClientSecureBearSSL.h>
 #include <WiFiUdp.h>
 
 // ── Configuration ────────────────────────────────────────────────
 
 #define FW_NAME          "frank-netcard"
-#define FW_VERSION       "1.00"
+#define FW_VERSION       "1.01"
 
 #define MAX_SOCKETS      4
 #define CMD_BUF_SIZE     512
@@ -207,6 +208,66 @@ static void cmdWSTAT() {
 }
 
 // ── Network Command Handlers ─────────────────────────────────────
+
+// AT+PING=host[,count]
+// Sends ICMP pings and returns per-ping results + summary.
+// Response: +PING:seq,time_ms  (per ping)
+//           +PINGSTAT:sent,received,avg_ms  (summary)
+//           OK / ERROR:reason
+static void cmdPING(const String &args) {
+    if (args.length() == 0) { respondErr("USAGE:host[,count]"); return; }
+    if (WiFi.status() != WL_CONNECTED) { respondErr("NO_WIFI"); return; }
+
+    String host;
+    int count = 4;
+
+    int comma = args.indexOf(',');
+    if (comma >= 0) {
+        host = args.substring(0, comma);
+        count = args.substring(comma + 1).toInt();
+        if (count < 1) count = 1;
+        if (count > 10) count = 10;
+    } else {
+        host = args;
+    }
+
+    IPAddress ip;
+    if (!WiFi.hostByName(host.c_str(), ip, DNS_TIMEOUT_MS)) {
+        respondErr("DNS_FAILED");
+        return;
+    }
+
+    int sent = 0, received = 0;
+    long total_ms = 0;
+
+    for (int i = 0; i < count; i++) {
+        sent++;
+        if (Ping.ping(ip, 1)) {
+            int t = (int)Ping.averageTime();
+            received++;
+            total_ms += t;
+            Serial.print("+PING:");
+            Serial.print(i + 1);
+            Serial.print(",");
+            Serial.print(t);
+            Serial.print("\r\n");
+        } else {
+            Serial.print("+PING:");
+            Serial.print(i + 1);
+            Serial.print(",-1\r\n");
+        }
+    }
+
+    int avg = received > 0 ? (int)(total_ms / received) : 0;
+    Serial.print("+PINGSTAT:");
+    Serial.print(sent);
+    Serial.print(",");
+    Serial.print(received);
+    Serial.print(",");
+    Serial.print(avg);
+    Serial.print("\r\n");
+    respondOK();
+}
 
 static void cmdRESOLVE(const String &args) {
     if (args.length() == 0) { respondErr("USAGE:hostname"); return; }
@@ -456,6 +517,7 @@ static void dispatch(const char *raw) {
     else if (cmd == "WSTAT")   cmdWSTAT();
     // Network
     else if (cmd == "RESOLVE") cmdRESOLVE(args);
+    else if (cmd == "PING")    cmdPING(args);
     // Sockets
     else if (cmd == "SOPEN")   cmdSOPEN(args);
     else if (cmd == "SSEND")   cmdSSEND(args);
