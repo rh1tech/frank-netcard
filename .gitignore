@@ -28,6 +28,9 @@ Thumbs.db
 !.vscode/launch.json
 !.vscode/extensions.json
 
+# Release builds
+release/
+
 # AI tool configs
 .claude/
 .cursorrules

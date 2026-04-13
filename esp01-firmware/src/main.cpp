@@ -15,7 +15,7 @@
 // ── Configuration ────────────────────────────────────────────────
 
 #define FW_NAME          "frank-netcard"
-#define FW_VERSION       "1.0.0"
+#define FW_VERSION       "1.00"
 
 #define MAX_SOCKETS      4
 #define CMD_BUF_SIZE     512
