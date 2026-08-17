@@ -341,11 +341,26 @@ static void cmdSOPEN(const String &args) {
             respondErr("DNS_FAILED");
             return;
         }
+        // TLS records can be up to 16384 bytes.  We must match that unless
+        // the server supports MFLN (Maximum Fragment Length Negotiation).
+        // Servers without MFLN (e.g. github.com) silently close when our
+        // buffer can't hold their records — looks like 0 bytes received.
+        int rxBuf;
+        if (freeHeap > 42000) {
+            rxBuf = 16384;
+        } else {
+            // Probe whether the server will negotiate smaller fragments
+            bool mfln = BearSSL::WiFiClientSecure::probeMaxFragmentLength(
+                host.c_str(), port, 4096);
+            if (mfln) {
+                rxBuf = 4096;
+            } else {
+                respondErr("LOW_MEMORY");
+                return;
+            }
+        }
         BearSSL::WiFiClientSecure *c = new BearSSL::WiFiClientSecure();
         c->setInsecure();  // Skip cert verification (ESP-01 RAM constraint)
-        // Size RX buffer to available heap; 16384 handles all servers but
-        // needs ~40KB total.  Fall back to 4096 on tighter heaps.
-        int rxBuf = (freeHeap > 48000) ? 16384 : 4096;
         c->setBufferSizes(rxBuf, 512);
         c->setTimeout(CONN_TIMEOUT_MS);
         // Use hostname (not IP) so BearSSL sends the SNI extension
