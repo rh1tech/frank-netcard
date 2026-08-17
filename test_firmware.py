@@ -280,6 +280,52 @@ def test_tls(m, tls_host=None, tls_port=443):
     m.command("AT+SCLOSE=1", timeout=3)
 
 
+def test_tls_github(m):
+    """Regression test: github.com requires 16KB RX buffer (no MFLN support)."""
+    print("\n--- TLS (github.com, no MFLN) ---")
+
+    host = "github.com"
+    port = 443
+
+    ok, lines = m.command("AT+HEAP")
+    heap = 0
+    if ok and lines and lines[0].startswith("+HEAP:"):
+        heap = int(lines[0].split(":")[1])
+    print(f"         Heap: {heap} bytes free")
+    if heap < 25000:
+        skip("AT+SOPEN TLS github.com", f"low memory ({heap} bytes)")
+        return
+
+    ok, lines = m.command(f"AT+RESOLVE={host}", timeout=10)
+    test(f"DNS resolve {host}", ok)
+    if not ok:
+        return
+
+    ok, lines = m.command(f"AT+SOPEN=0,TLS,{host},{port}", timeout=30)
+    detail = " ".join(lines) if not ok else ""
+    test("AT+SOPEN TLS github.com", ok, detail)
+    if not ok:
+        return
+
+    request = f"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    sent = m.send_data(0, request)
+    test("AT+SSEND to github.com", sent)
+
+    if sent:
+        chunks, closed = m.recv_all(timeout=10)
+        total = sum(len(d) for _, d in chunks)
+        test("Receive HTTPS from github.com", total > 0,
+             f"{total} bytes in {len(chunks)} chunks")
+        if chunks:
+            first_bytes = chunks[0][1][:80].decode("ascii", errors="replace")
+            got_http = "HTTP/" in first_bytes
+            test("github.com response valid", got_http,
+                 first_bytes.split("\r\n")[0])
+
+    time.sleep(1)
+    m.command("AT+SCLOSE=0", timeout=3)
+
+
 def test_udp(m):
     print("\n--- UDP Socket ---")
 
@@ -314,6 +360,136 @@ def test_udp(m):
             test("DNS response ID matches", resp_id == 0xABCD, f"0x{resp_id:04x}")
 
     m.command("AT+SCLOSE=2", timeout=3)
+
+
+def get_heap(m):
+    """Return current free heap in bytes, or 0 on failure."""
+    ok, lines = m.command("AT+HEAP")
+    if ok and lines and lines[0].startswith("+HEAP:"):
+        return int(lines[0].split(":")[1])
+    return 0
+
+
+def tls_roundtrip(m, sock, host, port, path="/"):
+    """Open TLS, do GET, receive response, close. Returns (ok, bytes_received)."""
+    ok, lines = m.command(f"AT+SOPEN={sock},TLS,{host},{port}", timeout=30)
+    if not ok:
+        return False, 0
+    request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    sent = m.send_data(sock, request)
+    if not sent:
+        m.command(f"AT+SCLOSE={sock}", timeout=3)
+        return False, 0
+    chunks, closed = m.recv_all(timeout=10)
+    total = sum(len(d) for _, d in chunks)
+    if not closed:
+        time.sleep(1)
+    m.command(f"AT+SCLOSE={sock}", timeout=3)
+    return total > 0, total
+
+
+def test_stress(m):
+    print("\n--- Stress Test ---")
+
+    # ── Repeated TLS to github.com — check for heap leaks ──
+    print("\n  [Repeated TLS: github.com x5]")
+    heap_before = get_heap(m)
+    print(f"         Heap before: {heap_before}")
+
+    for i in range(5):
+        ok, nbytes = tls_roundtrip(m, 0, "github.com", 443)
+        heap_now = get_heap(m)
+        test(f"  github.com round {i+1}", ok, f"{nbytes} bytes, heap={heap_now}")
+        if not ok:
+            break
+
+    heap_after = get_heap(m)
+    leak = heap_before - heap_after
+    print(f"         Heap after: {heap_after}  (delta: {leak})")
+    test("  Heap stable after 5 TLS rounds", leak < 2000, f"leaked {leak} bytes")
+
+    # ── Repeated TLS to httpbin.org — different server ──
+    print("\n  [Repeated TLS: httpbin.org x5]")
+    heap_before = get_heap(m)
+
+    for i in range(5):
+        ok, nbytes = tls_roundtrip(m, 0, "httpbin.org", 443, "/get")
+        test(f"  httpbin.org round {i+1}", ok, f"{nbytes} bytes")
+        if not ok:
+            break
+
+    heap_after = get_heap(m)
+    leak = heap_before - heap_after
+    print(f"         Heap: {heap_after}  (delta: {leak})")
+    test("  Heap stable after 5 httpbin rounds", leak < 2000, f"leaked {leak} bytes")
+
+    # ── Rapid TCP open/close cycles ──
+    print("\n  [Rapid TCP open/close x10]")
+    heap_before = get_heap(m)
+
+    for i in range(10):
+        ok, _ = m.command("AT+SOPEN=0,TCP,example.com,80", timeout=10)
+        if ok:
+            m.command("AT+SCLOSE=0", timeout=3)
+        test(f"  TCP cycle {i+1}", ok)
+        if not ok:
+            break
+
+    # Short pause — let TCP TIME_WAIT sockets expire and free heap
+    time.sleep(3)
+    heap_after = get_heap(m)
+    leak = heap_before - heap_after
+    print(f"         Heap: {heap_after}  (delta: {leak})")
+    test("  Heap stable after 10 TCP cycles", leak < 1000, f"leaked {leak} bytes")
+
+    # ── Mixed concurrent sockets: TCP + UDP + TLS ──
+    print("\n  [Concurrent: TCP + UDP + TLS]")
+    heap_before = get_heap(m)
+    print(f"         Heap before: {heap_before}")
+
+    ok_tcp, _ = m.command("AT+SOPEN=0,TCP,httpbin.org,80", timeout=10)
+    test("  Open TCP sock 0", ok_tcp)
+    ok_udp, _ = m.command("AT+SOPEN=1,UDP,8.8.8.8,53", timeout=5)
+    test("  Open UDP sock 1", ok_udp)
+    ok_tls, _ = m.command("AT+SOPEN=2,TLS,github.com,443", timeout=30)
+    heap_with_all = get_heap(m)
+    print(f"         Heap with 3 sockets: {heap_with_all}")
+    test("  Open TLS sock 2 (github)", ok_tls)
+
+    # Verify all three show up in SSTAT
+    if ok_tcp and ok_udp and ok_tls:
+        ok, lines = m.command("AT+SSTAT")
+        has_all = (any("+SSTAT:0,TCP" in l for l in lines)
+                   and any("+SSTAT:1,UDP" in l for l in lines)
+                   and any("+SSTAT:2,TLS" in l for l in lines))
+        test("  SSTAT shows all 3 sockets", ok and has_all)
+
+    for i in range(3):
+        m.command(f"AT+SCLOSE={i}", timeout=3)
+
+    heap_after = get_heap(m)
+    leak = heap_before - heap_after
+    print(f"         Heap after cleanup: {heap_after}  (delta: {leak})")
+    test("  Heap stable after concurrent test", leak < 2000, f"leaked {leak} bytes")
+
+    # ── Alternating github/httpbin TLS ──
+    print("\n  [Alternating TLS: github ↔ httpbin x3]")
+    heap_before = get_heap(m)
+
+    for i in range(3):
+        ok, nb = tls_roundtrip(m, 0, "github.com", 443)
+        test(f"  github.com  [{i+1}]", ok, f"{nb} bytes")
+        if not ok:
+            break
+        ok, nb = tls_roundtrip(m, 0, "httpbin.org", 443, "/get")
+        test(f"  httpbin.org [{i+1}]", ok, f"{nb} bytes")
+        if not ok:
+            break
+
+    heap_after = get_heap(m)
+    leak = heap_before - heap_after
+    print(f"         Heap: {heap_after}  (delta: {leak})")
+    test("  Heap stable after alternating TLS", leak < 2000, f"leaked {leak} bytes")
 
 
 def test_error_cases(m):
@@ -359,6 +535,7 @@ def main():
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--wifi", metavar="SSID,PASS", help="WiFi credentials for network tests")
     parser.add_argument("--full", action="store_true", help="Run TLS and UDP tests too")
+    parser.add_argument("--stress", action="store_true", help="Run stress tests (repeated TLS, heap leak checks)")
     parser.add_argument("--tls-host", metavar="HOST[:PORT]", help="Custom TLS host (default: httpbin.org:443)")
     args = parser.parse_args()
 
@@ -388,8 +565,12 @@ def main():
                         tls_host = parts[0]
                         if len(parts) > 1:
                             tls_port = int(parts[1])
+                    test_tls_github(m)
                     test_tls(m, tls_host=tls_host, tls_port=tls_port)
                     test_udp(m)
+
+                if args.stress:
+                    test_stress(m)
 
                 test_error_cases(m)
                 test_wifi_disconnect(m)
